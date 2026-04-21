@@ -1,37 +1,33 @@
 # KloudMate
 
-KloudMate is a small observability-style pipeline demo:
+KloudMate is a minimal real-time log ingestion and processing stack built with Go, Kafka, Redis, ClickHouse, and Grafana.
 
-- A Go **producer** publishes JSON log events to **Kafka**
-- A Go **backend** consumes those events, writes them to **ClickHouse**, tracks error counts in **Redis**, and triggers a simple alert action when errors spike
-- **Grafana** is included (via Docker Compose) to visualize data from ClickHouse
+![KloudMate dashboard](./Dashboard.png)
 
-## Screenshot
+## What it does
 
-![KloudMate screenshot](./Dashboard.png)
+- **Producer**: generates structured JSON logs and publishes them to Kafka topic `logs`
+- **Backend**: consumes from Kafka, stores logs in ClickHouse, maintains rolling per-service error counters in Redis, and prints a basic alert when the error rate spikes
+- **Grafana**: runs alongside the stack and can be configured to query ClickHouse for dashboards
 
-## Architecture (high level)
+## Architecture
 
-1. `producer` → Kafka topic `logs`
-2. `backend` Kafka consumer (`group-1`) reads `logs`
-3. `backend`:
-   - inserts rows into ClickHouse table `logs`
-   - increments Redis key `error_count:<service>` for `ERROR` logs (TTL 60s)
-   - prints an alert if error count exceeds 20 within the TTL window
+1. `producer` → Kafka (`logs`)
+2. `backend` consumer (`group-1`) reads from Kafka
+3. `backend` writes to:
+   - **ClickHouse** table `logs` (durable storage / analytics)
+   - **Redis** keys `error_count:<service>` (real-time counters, TTL 60s)
 
-## APIs (current)
+## Repo layout
 
-- `GET /health`: basic healthcheck
-
-## APIs (target per original prompt)
-
-- `GET /logs?service=&level=`: query logs from ClickHouse
-- `GET /metrics?service=`: compute metrics from Redis (error counters, latency stats, etc.)
-- `GET /alerts`: return recent alerts (in-memory or Redis-backed)
-
-## Config (recommended)
-
-The original prompt expects configs to come from environment variables (Kafka, Redis, ClickHouse, thresholds). The current code uses `localhost` defaults and hard-coded values.
+```
+.
+├── backend/               # Go consumer + HTTP API
+├── producer/              # Go log producer
+├── dashboards/            # (optional) dashboard assets
+├── docker-compose.yml     # local infrastructure: Kafka/Redis/ClickHouse/Grafana
+└── clickhouse-users.xml   # ClickHouse user config (default user, no password)
+```
 
 ## Prerequisites
 
@@ -40,32 +36,25 @@ The original prompt expects configs to come from environment variables (Kafka, R
 
 ## Services and ports
 
-From `docker-compose.yml`:
-
 - **Kafka**: `localhost:9092`
 - **Redis**: `localhost:6379`
 - **ClickHouse (HTTP)**: `localhost:8123`
 - **ClickHouse (native)**: `localhost:9000`
 - **Grafana**: `localhost:3000`
-
-Backend API:
-
-- **Healthcheck**: `GET http://localhost:8080/health`
+- **Backend API**: `localhost:8080`
 
 ## Quickstart (local)
 
-Bring up the dependencies:
+Start the infrastructure:
 
 ```bash
 docker compose up -d
 ```
 
-Create the ClickHouse table (runs inside the ClickHouse container):
+Create the ClickHouse `logs` table (inside the ClickHouse container):
 
 ```bash
 docker exec -it clickhouse clickhouse-client --multiquery --query "
-CREATE DATABASE IF NOT EXISTS default;
-
 CREATE TABLE IF NOT EXISTS logs
 (
   timestamp DateTime,
@@ -78,38 +67,41 @@ ORDER BY timestamp;
 "
 ```
 
-Run the backend (consumer + API):
+Run the backend:
 
 ```bash
 cd backend
 go run .
 ```
 
-In another terminal, run the producer (publishes to Kafka topic `logs`):
+Run the producer (in another terminal):
 
 ```bash
 cd producer
 go run .
 ```
 
-Then:
+Validate:
 
-- `curl localhost:8080/health` should return `OK`
-- Backend logs should show Kafka messages being received and inserts into ClickHouse
+```bash
+curl -sS localhost:8080/health
+```
+
+## API
+
+Currently implemented:
+
+- `GET /health`: returns `OK`
 
 ## Grafana
 
 Open Grafana at `http://localhost:3000`.
 
-- The Compose file installs the **ClickHouse datasource plugin** (`grafana-clickhouse-datasource`).
-- Add a ClickHouse datasource pointing at `http://clickhouse:8123` (from Grafana container networking).
+- The Compose file installs the ClickHouse datasource plugin (`grafana-clickhouse-datasource`).
+- Add a ClickHouse datasource pointing to `http://clickhouse:8123`.
 
-## Notes / current behavior
+## Notes
 
-- Connection endpoints are currently hard-coded in the Go code (Kafka/Redis/ClickHouse all use `localhost`), so this setup is intended for running the Go processes on your machine while dependencies run in Docker.
-- ClickHouse auth is configured via `clickhouse-users.xml` (default user, empty password).
-
-## License
-
-Add your license here.
+- The Go services currently connect to Kafka/Redis/ClickHouse via `localhost`, so run `backend` and `producer` on the host while dependencies run in Docker.
+- Alerts are currently **console output** based on Redis error counters (threshold: >20 errors within the 60s TTL window).
 
